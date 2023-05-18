@@ -21,9 +21,17 @@ class Drawer():
 
         # Initialise our logger
         self.logger = Logger("DRW")
+
+        # Generate a background
+        self.background = generate_perlin_noise_2d(dimensions, (2,2), (False, False)) * 64
+
+        import matplotlib.pyplot as plt
+        plt.imshow(self.background)
+        plt.show()
  
     def clear_canvas(self):
         self.canvas = np.zeros_like(self.canvas)
+        self.canvas = self.background
 
     """def add_noise_to_canvas(self):
         self.canvas = np.random.normal(0, 2, self.canvas.shape)
@@ -33,7 +41,7 @@ class Drawer():
     def get_canvas(self):
         self.canvas[self.canvas < 0] = 0
         self.canvas[self.canvas > 255] = 255
-        self.canvas += np.random.normal(0, 16, self.canvas.shape)
+        self.canvas += np.random.normal(0, 1, self.canvas.shape)
         #noise = np.random.poisson(self.canvas / 32)
         #self.canvas += noise
         self.canvas[self.canvas < 0] = 0
@@ -112,7 +120,7 @@ class Drawer():
     def generate_reference_sequence(self):
         phase_per_frame = 2 * np.pi / self.reference_period
         phase_min = 0
-        phase_max = (self.reference_sequence.shape[0]) * phase_per_frame
+        phase_max = self.reference_sequence.shape[0] * phase_per_frame
 
         phases = np.arange(phase_min, phase_max, phase_per_frame)
         phases = phases - phases[2]
@@ -121,9 +129,9 @@ class Drawer():
             self.draw_frame_at_phase(phase)
             self.reference_sequence[i] = self.get_canvas()
 
-        self.reference_phases = [phase_per_frame]
-        self.reference_phases.extend(np.diff(phases))
-        self.reference_phases = np.cumsum(self.reference_phases)
+        import matplotlib.pyplot as plt
+        plt.imshow(self.get_canvas())
+        plt.show()
 
     def generate_sequence(self):
         # Generate a sequence of frames
@@ -160,6 +168,7 @@ class Peristalsis(Drawer):
     def draw_frame_at_phase(self, phase):
         self.clear_canvas()
         for i in range(self.xs.shape[0]):
-            self.draw_circular_gaussian(self.xs[i], 32 + 64 *  np.sin(phase / 2 + self.xs[i] / 256)**2, 24, 16, 0, 1.4, 100)
-            self.draw_circular_gaussian(self.xs[i], self.dimensions[1] - (32 + 64 *  np.sin(phase / 2 + self.xs[i] / 256)**2), 24, 16, 0, 1.4, 100)
+            self.set_drawing_method(np.maximum)
+            self.draw_circular_gaussian(self.xs[i], 32 + 48 *  np.sin(phase / 2 + self.xs[i] / 256)**2, 24, 12 + 12 * np.sin(phase / 2 + self.xs[i] / 256)**2, 0, 3, 100)
+            self.draw_circular_gaussian(self.xs[i], self.dimensions[1] - (32 + 48 *  np.sin(phase / 2 + self.xs[i] / 256)**2), 24, 12 + 12 * np.sin(phase / 2 + self.xs[i] / 256)**2, 0, 3, 100)
 
