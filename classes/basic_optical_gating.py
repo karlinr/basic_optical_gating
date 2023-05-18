@@ -79,6 +79,17 @@ def v_fitting_standard(y_1, y_2, y_3):
 def adapted_v(x, I_1, I_2, x_n, c):
     return np.abs(I_1 * (x - x_n) + 0.5 * I_2 * (x**2 - x_n**2)) + c
 
+
+def u_fitting(y_1, y_2, y_3):
+    # Fit using a symmetric 'U' function, to find the interpolated minimum for three datapoints y_1, y_2, y_3,
+    # which are considered to be at coordinates x=-1, x=0 and x=+1
+    c = y_2
+    a = (y_1 + y_3 - 2*y_2) / 2
+    b = y_3 - a - c
+    x = -b / (2*a)
+    y = a*x**2 + b*x + c
+    return x, y, a, b, c
+
 # !SECTION
 
 # SECTION: Basic optical gating
@@ -124,6 +135,10 @@ class BasicOpticalGating():
             "get_delta_phases" : False,
             "get_unwrapped_phases" : False,
             "set_region_of_interest" : False
+        }
+        self.settings = {
+            "matching_method" : "jSAD", # jSAD, pSAD, SSD
+            "drift_correction" : True
         }
 
     def __repr__(self): 
@@ -251,7 +266,7 @@ class BasicOpticalGating():
     def set_reference_framerates(self, reference_framerates):
         self.reference_framerates = reference_framerates
 
-    def _pre_process_reference_sequence_bias_correction(self, frame_number = None):
+    def _preprocess_reference_sequence_bias_correction(self, frame_number = None):
         # Pre-process the reference sequence for bias correction
         # NOTE: This is a separate function so that it can be overriden by subclasses
         if self.roi is not None:
@@ -271,12 +286,14 @@ class BasicOpticalGating():
         if self._check_if_run("set_reference_sequence") == True:   
             self.logger.print_message("INFO", "Calculating bias correction...")
             # Pre-process the reference sequence - used for subclassing
-            reference_sequence = self._pre_process_reference_sequence_bias_correction()
+            reference_sequence = self._preprocess_reference_sequence_bias_correction()
 
             # Get the difference between neighbouring reference frames
             diffs = [0]
             for i in range(1, reference_sequence.shape[0]):
-                diffs.append(np.sum(np.abs(reference_sequence[i] - reference_sequence[i - 1])))
+                diff = reference_sequence[i] - reference_sequence[i - 1]
+                #diff = diff[diff < 0]
+                diffs.append(np.sum(np.abs(diff)))
             diffs = np.array(diffs)
 
             if np.any(diffs < 0):
@@ -339,7 +356,7 @@ class BasicOpticalGating():
         """
         # Get the sum of absolute differences between two frames
         # NOTE: Copied from OOG
-        if drift_correct:
+        if self.settings["drift_correction"]:
             dx, dy = self.drift
             rectF = [0, frame.shape[0], 0, frame.shape[1]]  # X1,X2,Y1,Y2
             rect = [
@@ -370,28 +387,32 @@ class BasicOpticalGating():
             frame_cropped = frame
             reference_frames_cropped  = reference_sequence
 
-        if use_jps:
+        if self.settings["matching_method"] == "jSAD":
             sad = jps.sad_with_references(frame_cropped, reference_frames_cropped)
-        else:
+        elif self.settings["matching_method"] == "pSAD":
             sad = []
             for i in range(len(reference_frames_cropped)):
-                sad.append(np.sum(np.abs(frame_cropped - reference_frames_cropped[i])))
+                diff = np.abs(frame_cropped.astype(np.int32) - reference_frames_cropped[i].astype(np.int32))
+                sad.append(np.sum(diff))
             sad = np.array(sad)
-            
-            """reference_frames_cropped = np.array(reference_frames_cropped).astype(np.int)
-            frame_cropped = np.array(frame_cropped).astype(np.int)
-            sad = reference_frames_cropped - frame_cropped
-            sad = np.abs(sad)
-            sad = np.sum(sad, axis = (1,2))"""
+        elif self.settings["matching_method"] == "SSD":
+            sad = []
+            for i in range(len(reference_frames_cropped)):
+                diff = np.abs(frame_cropped.astype(np.int32) - reference_frames_cropped[i].astype(np.int32))**2
+                sad.append(np.sum(diff))
+            sad = np.array(sad)
+        else:
+            self.logger.print_message("ERROR", "Matching method not recognised")
+            raise Exception("Matching method not recognised")
 
-        if drift_correct:
+        if self.settings["drift_correction"]:
             dx, dy = self.drift
             self.drift = update_drift_estimate(frame, reference_sequence[np.argmin(sad)], (dx, dy))
             self.drifts.append(self.drift)
 
         return sad
 
-    def get_sads(self, drift_correct = True): 
+    def get_sads(self): 
         """ Get the SADs for every frame in our sequence"""       
         if self._check_if_run("set_sequence") == True and self._check_if_run("set_reference_sequence") == True:    
             self.logger.print_message("INFO", "Calculating SADs...")      
@@ -403,7 +424,7 @@ class BasicOpticalGating():
             for i in range(self.sequence.shape[0]):
                 frame = self._preprocess_frame(i)
                 reference_sequence = self._preprocess_reference_sequence(i)
-                self.sads.append(self.get_sad(frame, reference_sequence, use_jps = True, drift_correct = drift_correct))
+                self.sads.append(self.get_sad(frame, reference_sequence, use_jps = True))
 
             self.sads = np.array(self.sads)
 
@@ -421,7 +442,7 @@ class BasicOpticalGating():
             self.phases = []
             self.frame_minimas = []
 
-            # Track number of frames outside the reference period
+            # Track frames outside the reference period
             outside_errors = []
             
             # Get the frame estimates
@@ -455,14 +476,6 @@ class BasicOpticalGating():
                     # Get minima location
                     x_min_l = (xs)[np.argmin(abs(v_l_c_l - v_r_c_l))]
                     y_min_l = m_3_l * (x_3 + cs_normalised_r(x_min_l)) + c_3_l
-                    """# New method
-                    # NOTE: Slower than current method
-                    f1 = lambda x: m_1_l * (x_2 + cs_normalised_l(x)) + c_1_l
-                    f2 = lambda x: m_3_l * (x_3 + cs_normalised_r(x)) + c_3_l
-                    func_l = lambda x: np.abs((f1(x)) - (f2(x)))
-                    min_l = scipy.optimize.minimize_scalar(func_l, bounds = (x_1, x_3), method = "bounded")
-                    x_min_l = min_l.x
-                    y_min_l = f1(x_min_l)"""
 
                     # Do fitting using corrected V
                     cdiff_r = self.cs(x_3) - self.cs(x_2)
@@ -474,14 +487,6 @@ class BasicOpticalGating():
                     # Get minima location
                     x_min_r = (xs)[np.argmin(abs(v_l_c_r - v_r_c_r))]
                     y_min_r = m_3_r * (x_2 + cs_normalised_r(x_min_r)) + c_3_r
-                    """# New method
-                    # NOTE: Slower than current method
-                    f1 = lambda x: m_1_r * (x_1 + cs_normalised_l(x)) + c_1_r
-                    f2 = lambda x: m_3_r * (x_2 + cs_normalised_r(x)) + c_3_r
-                    func_r = lambda x: np.abs((f1(x)) - (f2(x)))
-                    min_r = scipy.optimize.minimize_scalar(func_r, bounds = (x_1, x_3), method = "bounded")
-                    x_min_r = min_r.x
-                    y_min_r = f2(x_min_r)"""
 
                     if y_min_l < y_min_r:
                         self.phases.append(x_min_l - 2)
@@ -516,9 +521,10 @@ class BasicOpticalGating():
                 self.logger.print_message("WARNING", "No reference period specified, using reference sequence frames as period.")
                 self.reference_period = self.reference_sequence.shape[0] - 4
                 self.logger.print_message("INFO", f"Reference period set to {self.reference_period}")
-            elif self.reference_period < 0:
-                self.logger.print_message("ERROR", "Reference period must be positive.")
-                raise ValueError("Reference period must be positive.")
+            # Otherwise check values are reasonable
+            elif self.reference_period <= 0:
+                self.logger.print_message("ERROR", "Reference period must be greater than zero.")
+                raise ValueError("Reference period must be greater than.")
             elif (self.reference_period > self.reference_sequence.shape[0] - 4 + 1) or (self.reference_period < self.reference_sequence.shape[0] - 4 - 1):
                 self.logger.print_message("WARNING", f"Reference period significantly different to reference sequence length: {self.reference_sequence.shape[0] - 4} vs {self.reference_period}.")
 
@@ -530,7 +536,7 @@ class BasicOpticalGating():
                 delta_frame = (self.phases[i] - self.phases[i - 1]) % self.reference_period - self.reference_period
                 
                 # Correct for wraparound
-                while delta_frame < -self.reference_period / 2:
+                while delta_frame < -self.reference_period / 4:
                     delta_frame += self.reference_period
 
                 # Append the delta frame
@@ -570,7 +576,7 @@ class BasicOpticalGating():
                 self.logger.print_message("ERROR", "Failed to clear memory.")
                 return False
     
-    def run(self, bias_correct = False, clear_memory = False, drift_correct = True):
+    def run(self, bias_correct = False, clear_memory = False):
         """ Run the full optical gating on our sequence.
             Outputs the phases, delta phases and unwrapped phases.
             Optionally run bias correct and clear memory after completion
@@ -581,7 +587,7 @@ class BasicOpticalGating():
         """        
         if bias_correct:
             self.get_bias_correction()
-        self.get_sads(drift_correct = drift_correct)
+        self.get_sads()
         self.get_phases()
         self.get_delta_phases()
         self.get_unwrapped_phases()
@@ -810,6 +816,7 @@ class BasicOpticalGatingPlotter():
         plt.axhline(1, color = "black", linestyle = "--", label = "Expected delta phase")
         plt.xlabel("Phase")
         plt.ylabel("Delta phase")
+        #plt.ylim(0, 2)
         plt.legend()
         plt.show()
 

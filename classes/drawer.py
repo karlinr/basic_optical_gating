@@ -21,21 +21,19 @@ class Drawer():
 
         # Initialise our logger
         self.logger = Logger("DRW")
-
-        self.background = np.abs(generate_perlin_noise_2d((self.dimensions[0], self.dimensions[1]), (1, 1)) * 32)
-        self.show_background = True
  
     def clear_canvas(self):
         self.canvas = np.zeros_like(self.canvas)
 
-        if self.show_background == True:
-            self.canvas += self.background
-
+    """def add_noise_to_canvas(self):
+        self.canvas = np.random.normal(0, 2, self.canvas.shape)
+        self.canvas[self.canvas > 255] = 255
+        self.canvas[self.canvas < 0] = 0"""
 
     def get_canvas(self):
         self.canvas[self.canvas < 0] = 0
         self.canvas[self.canvas > 255] = 255
-        #self.canvas += np.random.normal(0, 4, self.canvas.shape)
+        self.canvas += np.random.normal(0, 16, self.canvas.shape)
         #noise = np.random.poisson(self.canvas / 32)
         #self.canvas += noise
         self.canvas[self.canvas < 0] = 0
@@ -86,14 +84,30 @@ class Drawer():
         """        
         phase += 1
         self.clear_canvas()
-        self.set_drawing_method(np.add)
-        self.draw_circular_gaussian(64, 64, 6 + 12 * (1 + np.sin(phase)), 6 + 12 * (1 + np.sin(phase)), 0, 1, 500)
+        """self.set_drawing_method(np.add)
+        self.draw_circular_gaussian(64 + 16 * np.sin(phase), 64 + 16 * np.cos(phase), 6 + 6 * (1 + np.sin(phase)), 6 + 6 * (1 + np.sin(phase)), 0, 2.5, 500)
         self.set_drawing_method(np.subtract)
-        self.draw_circular_gaussian(64, 64, 3 + 12 * (1 + np.sin(phase)), 3 + 12 * (1 + np.sin(phase)), 0, 1, 500)
+        self.draw_circular_gaussian(64 + 16 * np.sin(phase), 64 + 16 * np.cos(phase), 3 + 6 * (1 + np.sin(phase)), 3 + 6 * (1 + np.sin(phase)), 0, 2.5, 500)
         self.set_drawing_method(np.add)
-        self.draw_circular_gaussian(192, 192, 6 + 12 * (1 + np.cos(phase)), 6 + 12 * (1 + np.cos(phase)), 0, 1, 500)
+        self.draw_circular_gaussian(128 + 16 * np.sin(phase), 128 + 16 * np.cos(phase), 6 + 6 * (1 + np.cos(phase)), 6 + 6 * (1 + np.cos(phase)), 0, 2.5, 500)
         self.set_drawing_method(np.subtract)
-        self.draw_circular_gaussian(192, 192, 3 + 12 * (1 + np.cos(phase)), 3 + 12 * (1 + np.cos(phase)), 0, 1, 500)
+        self.draw_circular_gaussian(128 + 16 * np.sin(phase), 128 + 16 * np.cos(phase), 3 + 6 * (1 + np.cos(phase)), 3 + 6 * (1 + np.cos(phase)), 0, 2.5, 500)"""
+        self.set_drawing_method(np.add)
+        self.draw_circular_gaussian(64 + 16 * np.sin(phase), 64 + 16 * np.cos(phase), 32, 32, 0, 1, 2200)
+        self.set_drawing_method(np.subtract)
+        self.draw_circular_gaussian(64 + 16 * np.sin(phase), 64 + 16 * np.cos(phase), 31, 31, 0, 1, 2200)
+        self.set_drawing_method(np.add)
+        self.draw_circular_gaussian(128 + 16 * np.cos(phase), 128 + 16 * np.sin(phase), 32, 32, 0, 1, 2200)
+        self.set_drawing_method(np.subtract)
+        self.draw_circular_gaussian(128 + 16 * np.cos(phase), 128 + 16 * np.sin(phase), 30, 30, 0, 1, 2200)
+        """self.set_drawing_method(np.add)
+        self.draw_circular_gaussian(64, 64, 6 + 6 * (1 + np.sin(phase)), 6 + 6 * (1 + np.sin(phase)), 0, 1, 500)
+        self.set_drawing_method(np.subtract)
+        self.draw_circular_gaussian(64, 64, 3 + 6 * (1 + np.sin(phase)), 3 + 6 * (1 + np.sin(phase)), 0, 1, 500)
+        self.set_drawing_method(np.add)
+        self.draw_circular_gaussian(128, 128, 6 + 6 * (1 + np.cos(phase)), 6 + 6 * (1 + np.cos(phase)), 0, 1, 500)
+        self.set_drawing_method(np.subtract)
+        self.draw_circular_gaussian(128, 128, 3 + 6 * (1 + np.cos(phase)), 3 + 6 * (1 + np.cos(phase)), 0, 1, 500)"""
 
     def generate_reference_sequence(self):
         phase_per_frame = 2 * np.pi / self.reference_period
@@ -101,9 +115,7 @@ class Drawer():
         phase_max = (self.reference_sequence.shape[0]) * phase_per_frame
 
         phases = np.arange(phase_min, phase_max, phase_per_frame)
-        #phases += np.random.normal(0, 0.002, phases.shape[0])
-        #phases -= phases[2]
-        #phases[13] += 0.01
+        phases = phases - phases[2]
 
         for i, phase in enumerate(phases):
             self.draw_frame_at_phase(phase)
@@ -119,25 +131,35 @@ class Drawer():
         phase_min = 0
         phase_max = self.sequence.shape[0] * phase_per_frame
 
-
         phases = np.arange(phase_min, phase_max, phase_per_frame)
-        """import matplotlib.pyplot as plt
-        plt.plot(phases)
-        plt.show()
-        #phases += np.random.normal(0, 0.001, phases.shape[0])
-
-        phases = np.zeros(phases.shape)
-        for i in range(1, phases.shape[0]):
-            if i < 500:
-                phases[i] = phases[i - 1] + 0.05
-            elif i < 750:
-                phases[i] = phases[i - 1] + 0.025
-            else:
-                phases[i] = phases[i - 1] + 0.025 + (i - 750) / 1000
-        phases += np.random.normal(0, 0.001, phases.shape[0])
-        plt.plot(phases)
-        plt.show()"""
 
         for i, phase in enumerate(phases):
             self.draw_frame_at_phase(phase)
             self.sequence[i] = self.get_canvas()
+
+
+class Peristalsis(Drawer):
+    """
+    Single tube heart simulation
+
+    Args:
+        Drawer (class): Drawer class
+    """    
+    def __init__(self, beats, reference_period, dimensions):
+        """
+        Args:
+            beats (int): Number of beats to simulate
+            reference_period (float): Length of reference sequence
+            dimensions ((int, int)): tuple of dimensions of simulation canvas
+        """        
+        super().__init__(beats, reference_period, dimensions)
+
+        # Defines an array for our heart wall position
+        self.xs = np.linspace(0, self.sequence.shape[1], 7)
+
+    def draw_frame_at_phase(self, phase):
+        self.clear_canvas()
+        for i in range(self.xs.shape[0]):
+            self.draw_circular_gaussian(self.xs[i], 32 + 64 *  np.sin(phase / 2 + self.xs[i] / 256)**2, 24, 16, 0, 1.4, 100)
+            self.draw_circular_gaussian(self.xs[i], self.dimensions[1] - (32 + 64 *  np.sin(phase / 2 + self.xs[i] / 256)**2), 24, 16, 0, 1.4, 100)
+
