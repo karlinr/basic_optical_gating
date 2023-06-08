@@ -184,11 +184,12 @@ class UnscentedKalmanFilter:
 
         return self.H(self.x)
 
-class IMM():
+class InteractingMultipleModelFilter():
     # IMM adapted from filterpy implementation
     
     def __init__(self, models, mu, M):
         # Add our models
+        # Instances of the KalmanFilter class
         self.models = models
         
         # Initialise state probabilities
@@ -196,8 +197,8 @@ class IMM():
         self.M = M
         
         self.omega = np.zeros((len(self.models), len(self.models)))
+
         self.compute_mixing_probabilities()
-        
         self.compute_state_estimate()
         
     def predict(self):       
@@ -250,3 +251,4 @@ class IMM():
         for i, model in enumerate(self.models):
             y = model.x - self.x
             self.P += self.mu[i] * np.outer(y, y) + model.P
+            

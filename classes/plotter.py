@@ -18,7 +18,7 @@ class BasicOpticalGatingPlotter():
         """        
         # Initialise the logger
         self.logger = Logger("OGP")
-        self.logger.set_quiet()
+        self.logger.set_normal()
 
         # Fill in our arrays of basic optical gating instances and names
         if type(bogs) is list:
@@ -27,7 +27,7 @@ class BasicOpticalGatingPlotter():
             self.bogs = [bogs]
 
         if names == None:
-            self.names = [f"{i}" for i in range(len(self.bogs))]
+            self.names = [f"Optical gating {i}" for i in range(len(self.bogs))]
         elif type(names) is list:
             self.names = names
         else:
@@ -86,13 +86,16 @@ class BasicOpticalGatingPlotter():
         # Plot the SADs for a given frame
         self._begin_plot(f"SADs against frame number for frame: {frame_number}")
         for i in range(self.n):
-            plt.scatter(range(self.bogs[i].sads[frame_number].shape[0]), self.bogs[i].sads[frame_number], label = self.names[i], c = f"C{i}")
+            xs = np.arange(self.bogs[i].sads[frame_number].shape[0]) - 2
+            xs = xs / (self.bogs[i].reference_period)
+            xs = xs * (2 * np.pi)
+            plt.scatter(xs, self.bogs[i].sads[frame_number], label = self.names[i], c = f"C{i}")
             argmin = np.argmin(self.bogs[i].sads[frame_number][2:-2]) + 2
-            plt.scatter([argmin], [self.bogs[i].sads[frame_number][argmin]], c = f"C{i}", alpha = 0.5, s = 100)
-            plt.axvline(self.bogs[i].phases[frame_number] + 2, c = f"C{i}", ls = "--")
-        plt.axvline(2, c = "black", ls = "--")
-        plt.axvline(self.bogs[0].sads[frame_number].shape[0] - 3, c = "black", ls = "--")
-        plt.xticks(range(self.bogs[i].sads[frame_number].shape[0]))
+            #plt.scatter([argmin], [self.bogs[i].sads[frame_number][argmin]], c = f"C{i}", alpha = 0.5, s = 100)
+            #plt.axvline(self.bogs[i].phases[frame_number] + 2, c = f"C{i}", ls = "--")
+        #plt.axvline(2, c = "black", ls = "--")
+        #plt.axvline(self.bogs[0].sads[frame_number].shape[0] - 3, c = "black", ls = "--")
+        #plt.xticks(range(self.bogs[i].sads[frame_number].shape[0]))
         plt.xlabel("Frame number")
         plt.ylabel("SAD")
         plt.legend()
@@ -130,7 +133,7 @@ class BasicOpticalGatingPlotter():
         self._begin_plot("Delta phases against phases")
         for i in range(self.n):
             plt.scatter(self.bogs[i].phases[0:-1], self.bogs[i].delta_phases, label = self.names[i], s = 5)
-        plt.axhline(1, color = "black", linestyle = "--", label = "Expected delta phase")
+        plt.axhline((2 * np.pi) / self.bogs[i].reference_period, color = "black", linestyle = "--", label = "Expected delta phase")
         plt.xlabel("Phase")
         plt.ylabel("Delta phase")
         #plt.ylim(0, 2)
