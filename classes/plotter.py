@@ -230,7 +230,7 @@ class BasicOpticalGatingPlotter():
         Args:
             subtract (bool, optional): Whether to do linear fir on bias correction and unwrapped phases. Defaults to False.
         """        
-        # TODO: Linear fir for both unwrapped and bias correction as seperate vars
+        # TODO: Linear fit for both unwrapped and bias correction as seperate vars
         self.plot_sads(0)
         self.plot_phases()
         self.plot_delta_phases()

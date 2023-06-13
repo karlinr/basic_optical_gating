@@ -27,6 +27,7 @@ class Logger:
         self.last_time = time.time()
         self.set_normal()
         self.name = name
+        self.log_history = []
 
     def set_log_level(self, show_errors = True, show_warnings = True, show_infos = True, show_successes = True, show_debugs = True):
         """ Set the log level for printing messages. Generally we should use the helper functions to set these.
@@ -115,6 +116,12 @@ class Logger:
                 self._set_time()
             else:
                 print(f"{p_name} {p_marker} {message}")
+
+        self.log_history.append(f"{type}: {message}")
+
+    def save_log(self, filename):
+        return 0
+
 
     def __repr__(self) -> str:
         return_string = f"Logger({self.name})\n"

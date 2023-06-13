@@ -21,6 +21,9 @@ class KalmanFilter():
         
         # Weighting for past Q and R matrices
         self.alpha = 0.3
+
+        # Arrays to store results
+        self.xs = []
         
     def predict(self):
         # Predict our state using our model of the system
@@ -55,6 +58,103 @@ class KalmanFilter():
         # Compute the likelihood that the filter is performing optimally
         #self.L = (1 / (2 * np.pi * self.S)**0.5 @ np.exp(-0.5 * self.d.transpose() * np.linalg.inv(self.S) * self.d))[0][0]
         self.L = np.exp(multivariate_normal.logpdf(z, np.dot(self.H, self.x), self.S))
+
+    def run(self):
+        for i in range(self.data.shape[0]):
+            self.predict()
+            self.update(self.data[i])
+            self.xs.append(self.x)
+
+        self.xs = np.asarray(self.xs)
+
+class InteractingMultipleModelFilter():
+    # IMM adapted from filterpy implementation
+    
+    
+    def __init__(self, models, mu, M):
+        """
+        _summary_
+
+        Args:
+            models (list): Instances of Kalman filter class in a list or tuple of length n
+            mu (np.array): Initial filter probabilities of length n
+            M (np.array): Filter transition matrix of length n x n
+        """        
+        # Add our models
+        # Instances of the KalmanFilter class
+        self.models = models
+        
+        # Initialise state probabilities
+        self.mu = mu
+        self.M = M
+        
+        self.omega = np.zeros((len(self.models), len(self.models)))
+
+        self.compute_mixing_probabilities()
+        self.compute_state_estimate()
+        
+    def predict(self):       
+        xs, Ps = [], []
+        for i, (f, w) in enumerate(zip(self.models, self.omega.T)):
+            x = np.zeros(self.x.shape)
+            for kf, wj in zip(self.models, w):
+                x += kf.x * wj
+            xs.append(x)
+
+            P = np.zeros(self.P.shape)
+            for kf, wj in zip(self.models, w):
+                y = kf.x - x
+                P += wj * (np.outer(y, y) + kf.P)
+            Ps.append(P)
+
+        # compute each filter's prior using the mixed initial conditions
+        for i, f in enumerate(self.models):
+            # propagate using the mixed state estimate and covariance
+            f.x = xs[i].copy()
+            f.P = Ps[i].copy()
+            f.predict()
+
+        # compute mixed IMM state and covariance and save posterior estimate
+        self.compute_state_estimate()
+                    
+    def update(self, z):
+        self.d = z - self.x[0]
+        
+        for i, model in enumerate(self.models):
+            model.update(z)
+            self.mu[i] = model.L * self.cbar[i]
+        self.mu /= np.sum(self.mu)
+        
+        self.compute_mixing_probabilities()
+        self.compute_state_estimate()
+            
+    def compute_mixing_probabilities(self):
+        self.cbar = self.mu @ self.M
+        for i in range(len(self.models)):
+            for j in range(len(self.models)):
+                self.omega[i, j] = (self.M[i, j] * self.mu[i]) / self.cbar[j]
+                
+    def compute_state_estimate(self):
+        self.x = np.zeros(self.models[0].x.shape)
+        self.P = np.zeros(self.models[0].P.shape)
+        for i, model in enumerate(self.models):
+            self.x += model.x * self.mu[i]
+
+        for i, model in enumerate(self.models):
+            y = model.x - self.x
+            self.P += self.mu[i] * np.outer(y, y) + model.P
+
+    def run(self):
+        self.xs = []
+        self.mus = []
+        for i in range(self.data.shape[0]):
+            self.predict()
+            self.update(self.data[i])
+            self.xs.append(self.x)
+            self.mus.append(self.mu)
+
+        self.xs = np.asarray(self.xs)
+        self.mus = np.asarray(self.mus)
 
 
 class UnscentedKalmanFilter:
@@ -183,72 +283,3 @@ class UnscentedKalmanFilter:
         self.P = self.P_pred - np.dot(K, P_z).dot(K.T)
 
         return self.H(self.x)
-
-class InteractingMultipleModelFilter():
-    # IMM adapted from filterpy implementation
-    
-    def __init__(self, models, mu, M):
-        # Add our models
-        # Instances of the KalmanFilter class
-        self.models = models
-        
-        # Initialise state probabilities
-        self.mu = mu
-        self.M = M
-        
-        self.omega = np.zeros((len(self.models), len(self.models)))
-
-        self.compute_mixing_probabilities()
-        self.compute_state_estimate()
-        
-    def predict(self):       
-        xs, Ps = [], []
-        for i, (f, w) in enumerate(zip(self.models, self.omega.T)):
-            x = np.zeros(self.x.shape)
-            for kf, wj in zip(self.models, w):
-                x += kf.x * wj
-            xs.append(x)
-
-            P = np.zeros(self.P.shape)
-            for kf, wj in zip(self.models, w):
-                y = kf.x - x
-                P += wj * (np.outer(y, y) + kf.P)
-            Ps.append(P)
-
-        # compute each filter's prior using the mixed initial conditions
-        for i, f in enumerate(self.models):
-            # propagate using the mixed state estimate and covariance
-            f.x = xs[i].copy()
-            f.P = Ps[i].copy()
-            f.predict()
-
-        # compute mixed IMM state and covariance and save posterior estimate
-        self.compute_state_estimate()
-                    
-    def update(self, z):
-        self.d = z - self.x[0]
-        
-        for i, model in enumerate(self.models):
-            model.update(z)
-            self.mu[i] = model.L * self.cbar[i]
-        self.mu /= np.sum(self.mu)
-        
-        self.compute_mixing_probabilities()
-        self.compute_state_estimate()
-            
-    def compute_mixing_probabilities(self):
-        self.cbar = self.mu @ self.M
-        for i in range(len(self.models)):
-            for j in range(len(self.models)):
-                self.omega[i, j] = (self.M[i, j] * self.mu[i]) / self.cbar[j]
-                
-    def compute_state_estimate(self):
-        self.x = np.zeros(self.models[0].x.shape)
-        self.P = np.zeros(self.models[0].P.shape)
-        for i, model in enumerate(self.models):
-            self.x += model.x * self.mu[i]
-
-        for i, model in enumerate(self.models):
-            y = model.x - self.x
-            self.P += self.mu[i] * np.outer(y, y) + model.P
-            

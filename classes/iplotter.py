@@ -6,7 +6,8 @@ from .logger import Logger, Colour
 class iBasicOpticalGatingPlotter():
     def __init__(self, bogs, names = None) -> None:
         """
-        Plots instances of the basic optical gating class
+        Plots instances of the basic optical gating class.
+        Interactive version (WIP)
 
         Args:
             bogs (object or list): single or list of BOG objects
@@ -33,7 +34,7 @@ class iBasicOpticalGatingPlotter():
         self.n = len(self.bogs)
 
         self.settings = {
-            "figsize" : (14,8)
+            "figsize" : (12,8)
         }
 
     def _begin_plot(self, plot_title):
@@ -52,23 +53,25 @@ class iBasicOpticalGatingPlotter():
             self._begin_plot(f"SAD plot for frame {frame_number}")
 
             for i in range(self.n):
-                xs = np.arange(self.bogs[i].sads[frame_number].shape[0]) - 2
-                xs = xs / (self.bogs[i].reference_period)
-                xs = xs * (2 * np.pi)
+                xs = np.arange(self.bogs[i].sads[frame_number].shape[0])
                 plt.scatter(xs, self.bogs[i].sads[frame_number], s = 5)
                 plt.ylim(np.min(self.bogs[i].sads), np.max(self.bogs[i].sads))
+                plt.xlabel("Frame")
+                plt.ylabel("SAD")
         interact(plot_func, 
-                frame_number = widgets.IntSlider(min=0, max=self.bogs[0].sads.shape[0], value=0, layout=Layout(width='900px'))
+                frame_number = widgets.IntSlider(min=0, max=self.bogs[0].sads.shape[0] - 1, value=0, layout=Layout(width='900px'))
         )
 
     def plot_delta_phases_phases(self):
-        def plot_func(frame_number_begin, frame_number_end):
+        def plot_func(frame_indices):
             self._begin_plot("Delta phases plot")
             for i in range(self.n):
-                plt.scatter(self.bogs[i].phases[1::], self.bogs[i].delta_phases)
-                plt.scatter(self.bogs[i].phases[frame_number_begin + 1:frame_number_end + 1], self.bogs[i].delta_phases[frame_number_begin + 1:frame_number_end + 1], c = np.arange(frame_number_end - frame_number_begin))
+                plt.scatter(self.bogs[i].phases[frame_indices[0]:frame_indices[1]], self.bogs[i].delta_phases[frame_indices[0]:frame_indices[1]], s = 3, label = self.names[i])
+            plt.xlabel("Frame number")
+            plt.ylabel("Delta frame")
+            plt.legend()
+                #plt.scatter(self.bogs[i].phases[frame_indices[0]:frame_indices[1]], self.bogs[i].delta_phases[frame_indices[0]:frame_indices[1]], c = np.arange(len(self.bogs[i].phases[frame_indices[0]:frame_indices[1]])))
         interact(plot_func, 
-                frame_number_begin = widgets.IntSlider(min=0, max=self.bogs[0].phases.shape[0], value=0, layout=Layout(width='900px')),
-                frame_number_end = widgets.IntSlider(min=0, max=self.bogs[0].phases.shape[0], value=0, layout=Layout(width='900px'))
+                frame_indices = widgets.IntRangeSlider(value = [0, self.bogs[0].phases.shape[0] - 1], min = 0, max = self.bogs[0].phases.shape[0] - 1, layout=Layout(width='900px')),
 
         )

@@ -60,6 +60,9 @@ def v_fitting(y_1, y_2, y_3, x_1, x_2, x_3):
 def v_fitting_standard(y_1, y_2, y_3):
     # Fit using a symmetric 'V' function, to find the interpolated minimum for three datapoints y_1, y_2, y_3,
     # which are considered to be at coordinates x=-1, x=0 and x=+1
+    if y_1 < y_2 or y_3 < y_2:
+        return 0, 0
+
     if y_1 > y_3:
         x = 0.5 * (y_1 - y_3) / (y_1 - y_2)
         y = y_2 - x * (y_1 - y_2)
@@ -87,14 +90,15 @@ def u_fittingN(y):
     from scipy.optimize import curve_fit
     # Quadratic best fit to N datapoints, which [** inconsistently with respect to u/v_fitting() **]
     # are considered to be at coordinates x=0, 1, ...
-    x = np.arange(len(y))
+    length = y.shape[0]
+    x = np.arange(length)
     def quadratic(x, a, b, c):
         return a*x**2 + b*x + c
     (a, b, c), cov = curve_fit(quadratic, x, y, p0=[0, 0, np.average(y)])
     x = -b / (2*a)
     y = quadratic(x, a, b, c)
     #    return x, y, *popt
-    return x - len(y) / 2, y, a, b, c
+    return x - length / 2, y, a, b, c
 
 # !SECTION
 
@@ -102,7 +106,6 @@ def u_fittingN(y):
 # Simplified version of the optical gating class for testing and implementing new features
 class BasicOpticalGating(): 
     # TODO: Add option to scale frame values to a range so different sequences can be compared
-    # TODO: Add method to generate reference sequence and determine reference period
     # TODO: Rename phase to frame
 
     # Use basic_optical_gating_plotter to plot results
@@ -129,6 +132,10 @@ class BasicOpticalGating():
         self.reference_period = None
         self.framerate_correction = False
         self.roi = None
+        self.frame_history = []
+        self.period_history = []
+        self.reference_indices = [None, None]
+        
         self.has_run = {
             "set_sequence" : False,
             "set_reference_sequence" : False,
@@ -142,7 +149,13 @@ class BasicOpticalGating():
             "matching_method" : "jSAD", # jSAD, pSAD, SSD
             "drift_correction" : False,
             "clear_memory" : False,
-            "padding" : 2
+            "padding" : 2,
+            "buffer_length" : 600,
+            "skip_frames" : 1,
+            "padding_frames" : 2,
+            "subframe_method" : "v-fitting",
+            "u_fitting_points" : 2,
+            "reference_framerate_reduction" : 1
         }
 
     def __repr__(self): 
@@ -159,7 +172,9 @@ class BasicOpticalGating():
         for key, value in self.settings.items():
             return_string += f"\t{key}:"
             if type(value) is str:
-                return_string += f"{value}\n"
+                return_string += f"{Colour.BLUE} {value}{Colour.END}\n"
+            elif type(value) is not bool:
+                return_string += f"{Colour.BLUE} {value}{Colour.END}\n"
             elif value:
                 return_string += f"{Colour.GREEN} True{Colour.END}\n"
             else:
@@ -207,7 +222,7 @@ class BasicOpticalGating():
                 frames (str, optional): Range of frames to load. Defaults to all.
         """        
 
-        self.logger.print_message("INFO", "Loading sequence...")
+        self.logger.print_message("INFO", "Loading sequence")
         
         self.sequence = self._load_data(sequence_src, frames)
 
@@ -216,7 +231,7 @@ class BasicOpticalGating():
             raise Exception("Sequence must have at least one frame")
         
         self.has_run["set_sequence"] = True
-        self.logger.print_message("SUCCESS", f"Sequence loaded with {self.sequence.shape[0]} frames")
+        self.logger.print_message("SUCCESS", f"Sequence loaded with {Colour.BLUE}{self.sequence.shape[0]}{Colour.END} frames")
 
     def set_reference_sequence(self, reference_sequence_src):
         """ Set the reference sequence to use for optical gating
@@ -225,7 +240,7 @@ class BasicOpticalGating():
                     reference_sequence_src (str): Path to the reference sequence
         """        
         # Load the reference sequence
-        self.logger.print_message("INFO", "Loading reference sequence...")
+        self.logger.print_message("INFO", "Loading reference sequence")
 
         #self.reference_sequence = tf.imread(reference_sequence_src)
         self.reference_sequence = self._load_data(reference_sequence_src)
@@ -257,9 +272,17 @@ class BasicOpticalGating():
             self.logger.print_message("ERROR", "Reference period must be a float or string")
             raise Exception("Reference period must be a float or string")
         
-    # TODO: Make this work with my optical gating code
-    # TODO: Return the indices of our reference frames
-    # TODO: Add support for different frame rates
+    def get_reference_sequence(self):
+        self.logger.print_message("INFO", "Generating reference sequence from input sequence")
+        for frame in self.sequence[::self.settings["reference_framerate_reduction"]]:
+            refget = self.establish_period_from_frames(frame)
+            if refget[0] != None:
+                break
+        self.reference_sequence = np.array(refget[0])
+        self.reference_period = refget[1]
+        self.reference_indices = refget[2]
+        self.has_run["set_reference_sequence"] = True
+        
     def establish_period_from_frames(self, pixel_array):
         """ Attempt to establish a period from the frame history,
             including the new frame represented by 'pixel_array'.
@@ -277,49 +300,88 @@ class BasicOpticalGating():
         # in force_framerate=False mode. With force_framerate=True (or indeed in real time) we will
         # have problems if we can't keep up with the framerate frames are arriving at.
         # We should probably be monitoring for that situation...
-        ref_buffer_duration = (self.frame_history[-1].metadata["timestamp"] - self.frame_history[0].metadata["timestamp"])
-        while (ref_buffer_duration > 1.0/self.ref_settings["min_heart_rate_hz"]):
+        ref_buffer_duration = len(self.frame_history)
+        while (ref_buffer_duration > self.settings["buffer_length"]):
             # I have coded this as a while loop, but we would normally expect to only trim one frame at a time
-            self.logger.print_message("DEBUG", f"Trimming buffer from duration {ref_buffer_duration}s to {1.0/self.ref_settings['min_heart_rate_hz']}s")
+            self.logger.print_message("DEBUG", f"Trimming buffer from duration {ref_buffer_duration}s to {self.settings['buffer_length']} frames")
             del self.frame_history[0]
-            ref_buffer_duration = (self.frame_history[-1].metadata["timestamp"] - self.frame_history[0].metadata["timestamp"])
+            ref_buffer_duration = len(self.frame_history)
 
-        return establish(self.frame_history, self.period_history, self.ref_settings)
-        
-    def reduce_reference_framerate(self, reduction = 2, offset = 0):
+        return self.establish(self.frame_history, self.period_history)
+    
+    def establish(self, sequence, period_history, require_stable_history=True):
+        """ Attempt to establish a reference period from a sequence of recently-received frames.
+            Parameters:
+                sequence        list of PixelArray objects  Sequence of recently-received frame pixel arrays (in chronological order)
+                period_history  list of float               Values of period calculated for previous frames (which we will append to)
+                ref_settings    dict                        Parameters controlling the sync algorithms
+                require_stable_history  bool                Do we require a stable history of similar periods before we consider accepting this one?
+            Returns:
+                List of frame pixel arrays that form the reference sequence (or None).
+                Exact (noninteger) period for the reference sequence
         """
-        Finds where the reference sequence is located within our full sequence
-        then selects 1 in every (reduction) frames and pads appropriately
-        Replaces our reference sequence with a lower framerate version
-        NOTE: Need to create a method to estimate the reference period also would be better
-        to use OOG method to generate reference sequence from scratch and then perform framerate
-        reduction
-        NOTE: Doesn't work with synthetic data generation as the reference sequence is not neccesarily
-        included in the sequence
+        start, stop, periodToUse = self.establish_indices(sequence, period_history, require_stable_history)
+        if (start is not None) and (stop is not None):
+            referenceFrames = sequence[start:stop]
+        else:
+            referenceFrames = None
 
-        Args:
-            reduction (int, optional): Frames to skip. Defaults to 1.
-            offset (int, optional): Offset from high framerate sequence. Defaults to 0.
+        return referenceFrames, periodToUse, [start, stop]
+
+    def establish_indices(self, sequence, period_history, require_stable_history=True):
+        """ Establish the list indices representing a reference period, from a given input sequence.
+            Parameters: see header comment for establish(), above
+            Returns:
+                List of indices that form the reference sequence (or None).
         """
+        if len(sequence) > 1:
+            frame = sequence[-1]
+            pastFrames = sequence[:-1]
 
-        # Get our high framerate indices
-        sad = []
-        for j in range(self.sequence.shape[0]):
-            sad.append(np.sum(np.abs(self.sequence[j] - self.reference_sequence[0])))
-        reference_min = np.argmin(sad)
-        reference_max = reference_min + self.reference_sequence.shape[0]
-        reference_frame_hf_indices = np.arange(reference_min, reference_max)
+            # Calculate Diffs between this frame and previous frames in the sequence
+            diffs = jps.sad_with_references(frame, pastFrames)
 
-        # Get our low framerate indices
-        reference_frame_lf_indices = reference_frame_hf_indices[2:-2][::reduction] + offset
-        reference_frame_lf_indices = np.insert(reference_frame_lf_indices, 0, reference_frame_lf_indices[0] - reduction)
-        reference_frame_lf_indices = np.insert(reference_frame_lf_indices, 0, reference_frame_lf_indices[0] - reduction)
-        reference_frame_lf_indices = np.append(reference_frame_lf_indices, reference_frame_lf_indices[-1] + reduction)
-        reference_frame_lf_indices = np.append(reference_frame_lf_indices, reference_frame_lf_indices[-1] + reduction)
+            # Calculate Period based on these Diffs
+            period = calculate_period_length(diffs, 5, 0.5, 0.75)
+            if period != -1:
+                period_history.append(period)
 
-        # and our low framerate sequence
-        self.reference_sequence = self.sequence[reference_frame_lf_indices]
-        self.reference_period = self.reference_period / reduction
+            # If we have a valid period, extract the frame indices associated with this period, and return them
+            # The conditions here are empirical ones to protect against glitches where the heuristic
+            # period-determination algorithm finds an anomalously short period.
+            # JT TODO: The three conditions on the period history seem to be pretty similar/redundant. I wrote these many years ago,
+            #  and have just left them as they "ain't broke". They should really be tidied up though.
+            #  One thing I can say is that the reason for the *two* tests for >6 have to do with the fact that
+            #  we are establishing the period based on looking back from the *most recent* frame, but then actually
+            #  and up taking a period from a few frames earlier, since we also need to incorporate some extra padding frames.
+            #  That logic could definitely be improved and tidied up - we should probably just
+            #  look for a period starting numExtraRefFrames from the end of the sequence...
+            # TODO: JT writes: logically these tests should probably be in calculate_period_length, rather than here
+            history_stable = (len(period_history) >= (5 + (2 * self.settings["padding_frames"]))
+                                and (len(period_history) - 1 - self.settings["padding_frames"]) > 0
+                                and (period_history[-1 - self.settings["padding_frames"]]) > 6)
+            if (
+                period != -1
+                and period > 6
+                and ((require_stable_history == False) or (history_stable))
+            ):
+                # We pick out a recent period from period_history.
+                # Note that we don't use the very most recent value, because when we pick our reference frames
+                # we will pad them with numExtraRefFrames at either end. We pick the period value that
+                # pertains to the range of frames that we will actually use
+                # for the central "unpadded" range of our reference frames.
+                periodToUse = period_history[-1 - self.settings["padding_frames"]]
+                self.logger.print_message("SUCCESS", f"Found a period I'm happy with: {Colour.BLUE}{periodToUse}{Colour.END}")
+
+                # DevNote: int(x+1) is the same as np.ceil(x).astype(np.int)
+                numRefs = int(periodToUse + 1) + (2 * self.settings["padding_frames"])
+
+                # return start, stop, period
+                self.logger.print_message("INFO", f"Start index: {Colour.BLUE}{len(pastFrames) - numRefs}{Colour.END}; Stop index: {Colour.BLUE}{len(pastFrames)}{Colour.END}; Period {Colour.BLUE}{periodToUse}{Colour.END}",)
+                return len(pastFrames) - numRefs, len(pastFrames), periodToUse
+
+        self.logger.print_message("DEBUG", "I didn't find a period I'm happy with!")
+        return None, None, None
 
     def _preprocess_frame(self, frame_number):
         # Pre-process the sequence
@@ -441,14 +503,14 @@ class BasicOpticalGating():
     def get_sads(self): 
         """ Get the SADs for every frame in our sequence"""       
         if self._check_if_run("set_sequence") == True and self._check_if_run("set_reference_sequence") == True:    
-            self.logger.print_message("INFO", "Calculating SADs...")      
+            self.logger.print_message("INFO", f"Calculating similarity metric using method: {Colour.BLUE}{self.settings['matching_method']}{Colour.END}")      
             self.sads = []
             self.drifts = []
 
             # Calculate SADs
             reference_sequence = self._preprocess_reference_sequence()
-            for i in range(self.sequence.shape[0]):
-                frame = self._preprocess_frame(i)
+            for i in range(self.sequence[::self.settings["skip_frames"]].shape[0]):
+                frame = self._preprocess_frame(i * self.settings["skip_frames"])
                 self.sads.append(self.get_sad(frame, reference_sequence))
 
             self.sads = np.array(self.sads)
@@ -463,7 +525,7 @@ class BasicOpticalGating():
     def get_phases(self):
         """ Get the phase estimates for our sequence"""        
         if self._check_if_run("get_sads") == True:
-            self.logger.print_message("INFO", "Calculating phases...")
+            self.logger.print_message("INFO", "Calculating phases")
             self.phases = []
             self.frame_minimas = []
 
@@ -473,18 +535,29 @@ class BasicOpticalGating():
             # Get the frame estimates
             for i, sad in enumerate(self.sads):           
                 # Get the frame estimate
-                frame_minima = np.argmin(sad[2:-2]) + 2
-                y_1 = sad[frame_minima - 1]
-                y_2 = sad[frame_minima]
-                y_3 = sad[frame_minima + 1]
-                
-                subframe_minima = v_fitting_standard(y_1, y_2, y_3)[0]
+                frame_minima = np.argmin(sad[self.settings["padding_frames"]:-self.settings["padding_frames"]]) + self.settings["padding_frames"]
 
-                if abs(subframe_minima) > 0.5:
-                    self.logger.print_message("WARNING", f"Subframe minima outside range {subframe_minima}")
+                if self.settings["subframe_method"] == "u-fitting":
+                    y_1 = sad[frame_minima - 1]
+                    y_2 = sad[frame_minima]
+                    y_3 = sad[frame_minima + 1]
+                    subframe_minima = u_fitting(y_1, y_2, y_3)[0]
+                    if abs(subframe_minima) > 0.5:
+                        self.logger.print_message("WARNING", f"Subframe minima outside range {subframe_minima} for frame {i}")
+                elif self.settings["subframe_method"] == "n-u-fitting":
+                    subframe_minima = u_fittingN(sad[frame_minima - self.settings["u_fitting_points"]:frame_minima + self.settings["u_fitting_points"] + 1])[0]
+                elif self.settings["subframe_method"] == "minima":
+                    subframe_minima = 0
+                else:
+                    # Default to v-fitting
+                    y_1 = sad[frame_minima - 1]
+                    y_2 = sad[frame_minima]
+                    y_3 = sad[frame_minima + 1]
+                    subframe_minima = v_fitting_standard(y_1, y_2, y_3)[0]
+                    if abs(subframe_minima) > 0.5:
+                        self.logger.print_message("WARNING", f"Subframe minima outside range {subframe_minima} for frame {i}")
 
-                #self.phases.append(((frame_minima - 2 + subframe_minima) / self.reference_period) * (2 * np.pi))
-                self.phases.append(frame_minima - 2 + subframe_minima)
+                self.phases.append(frame_minima - self.settings["padding_frames"] + subframe_minima)
 
             self.phases = np.array(self.phases)
             self.frame_minimas = np.array(self.frame_minimas)
@@ -498,8 +571,8 @@ class BasicOpticalGating():
             TODO: Do checks for reference period earlier
         """        
         if self._check_if_run("get_phases") == True:
-            self.logger.print_message("INFO", "Calculating delta phases...")
-            # If reference period isn't set then use the length of our referene sequence as a guide
+            self.logger.print_message("INFO", "Calculating delta phases")
+            # If reference period isn't set then use the length of our reference sequence as a guide
             if self.reference_period == None:
                 self.logger.print_message("WARNING", "No reference period specified, using reference sequence frames as period.")
                 self.reference_period = self.reference_sequence.shape[0] - 4
@@ -508,22 +581,19 @@ class BasicOpticalGating():
             elif self.reference_period <= 0:
                 self.logger.print_message("ERROR", "Reference period must be greater than zero.")
                 raise ValueError("Reference period must be greater than.")
-            elif (self.reference_period > self.reference_sequence.shape[0] - 4 + 1) or (self.reference_period < self.reference_sequence.shape[0] - 4 - 1):
-                self.logger.print_message("WARNING", f"Reference period significantly different to reference sequence length: {self.reference_sequence.shape[0] - 4} vs {self.reference_period}.")
+            elif (self.reference_period > self.reference_sequence.shape[0] - 4 + 1) or (self.reference_period < self.reference_sequence.shape[0] - self.settings["padding_frames"] * 2 - 1):
+                self.logger.print_message("WARNING", f"Reference period significantly different to reference sequence length: {self.reference_sequence.shape[0] - self.settings['padding_frames'] * 2} vs {self.reference_period}.")
 
             # Initialise the delta frames
             self.delta_phases = []
 
             # Get our delta frames
             for i in range(1, self.phases.shape[0]):
-                delta_frame = (self.phases[i] - self.phases[i - 1]) % self.reference_period - self.reference_period
+                delta_frame = ((self.phases[i] - self.phases[i - 1]) % self.reference_period) - self.reference_period
                 
                 # Correct for wraparound
-                while delta_frame < -self.reference_period / 4:
+                while delta_frame < -self.reference_period / 2:
                     delta_frame += self.reference_period
-
-                while delta_frame < -(2 * np.pi) / 4:
-                    delta_frame += 2 * np.pi
 
                 # Append the delta frame
                 self.delta_phases.append(delta_frame)
@@ -536,7 +606,7 @@ class BasicOpticalGating():
     def get_unwrapped_phases(self):
         """ Get the unwrapped phases """        
         if self._check_if_run("get_delta_phases") == True:
-            self.logger.print_message("INFO", "Unwrapping phases...")
+            self.logger.print_message("INFO", "Unwrapping phases")
             self.unwrapped_phases = [0]
             for i in range(0, self.delta_phases.shape[0]):
                 self.unwrapped_phases.append(self.unwrapped_phases[-1] + self.delta_phases[i])
@@ -552,7 +622,7 @@ class BasicOpticalGating():
                 Bool: Returns True if successful
         """       
         if self._check_if_run("set_sequence") == True:
-            self.logger.print_message("INFO", "Clearing memory...")
+            self.logger.print_message("INFO", "Clearing memory")
             try:
                 del self.sequence
                 self.has_run["set_sequence"] = False
@@ -571,6 +641,8 @@ class BasicOpticalGating():
                 bias_correct (bool, optional): Run with bias correction. Defaults to False.
                 clear_memory (bool, optional): Delete our sequence from memory. Defaults to False.
         """        
+        if not self.has_run["set_reference_sequence"]:
+            self.get_reference_sequence()
         self.get_sads()
         self.get_phases()
         self.get_delta_phases()
@@ -582,373 +654,6 @@ class BasicOpticalGating():
 
 
         self.logger.print_message("SUCCESS", "Finished processing sequence.")
-# !SECTION
-
-# SECTION: Bias correction methods
-class AdaptiveSubframeEstimation(BasicOpticalGating):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def get_reference_sequence_lf(self, reduction = 2):
-        """
-        Finds where the reference sequence is located within our full sequence
-        then selects 1 in every (reduction) frames and pads appropriately
-        Replaces our reference sequence with a lower framerate version
-        NOTE: Need to create a method to estimate the reference period also would be better
-        to use OOG method to generate reference sequence from scratch and then perform framerate
-        reduction
-        NOTE: Doesn't work with synthetic data generation as the reference sequence is not neccesarily
-        included in the sequence
-
-        Args:
-            reduction (int, optional): Frames to skip. Defaults to 1.
-            offset (int, optional): Offset from high framerate sequence. Defaults to 0.
-        """
-
-        # Get our high framerate indices
-        sad = []
-        for j in range(self.sequence.shape[0]):
-            sad.append(np.sum(np.abs(self.sequence[j] - self.reference_sequence[0])))
-        reference_min = np.argmin(sad)
-        reference_max = reference_min + self.reference_sequence.shape[0]
-        reference_frame_hf_indices = np.arange(reference_min, reference_max)
-
-        # Get our low framerate indices
-        reference_frame_lf_indices = reference_frame_hf_indices[2:-2][::reduction]
-        reference_frame_lf_indices = np.insert(reference_frame_lf_indices, 0, reference_frame_lf_indices[0] - reduction)
-        reference_frame_lf_indices = np.insert(reference_frame_lf_indices, 0, reference_frame_lf_indices[0] - reduction)
-        reference_frame_lf_indices = np.append(reference_frame_lf_indices, reference_frame_lf_indices[-1] + reduction)
-        reference_frame_lf_indices = np.append(reference_frame_lf_indices, reference_frame_lf_indices[-1] + reduction)
-
-        # and our low framerate sequence
-        self.reference_sequence_lf = self.sequence[reference_frame_lf_indices]
-        self.reference_period_lf = self.reference_period / reduction
-
-    def get_sads_lf(self):
-        """ Get the SADs for every frame in our sequence"""       
-        if self._check_if_run("set_sequence") == True and self._check_if_run("set_reference_sequence") == True:    
-            self.logger.print_message("INFO", "Calculating SADs...")      
-            self.sads = []
-            self.drifts = []
-
-            # Calculate SADs
-            for i in range(self.sequence.shape[0]):
-                frame = self._preprocess_frame(i)
-                self.sads.append(self.get_sad(frame, self.reference_sequence_lf))
-
-            self.sads_lf = np.array(self.sads)
-
-            self.has_run["get_sads"] = True
-            self.logger.print_message("SUCCESS", "SADs calculated")
-
-            return self.sads_lf
-        else:
-            self.logger.print_message("ERROR", "Cannot calculate SADs without a sequence and reference sequence")
-
-    def get_sads_region(self):
-        return 0
-
-    def get_phases(self):
-        """ Get the phase estimates for our sequence"""        
-        if self._check_if_run("get_sads") == True:
-            self.logger.print_message("INFO", "Calculating phases...")
-            self.phases = []
-            self.frame_minimas = []
-
-            # Track frames outside the reference period
-            outside_errors = []
-            
-            # Get the frame estimates
-            for i, sad in enumerate(self.sads):           
-                # Get the frame estimate
-                frame_minima = np.argmin(sad[2:-2]) + 2
-                y_1 = sad[frame_minima - 1]
-                y_2 = sad[frame_minima]
-                y_3 = sad[frame_minima + 1]
-                
-                subframe_minima = v_fitting_standard(y_1, y_2, y_3)[0]
-
-                if abs(subframe_minima) > 0.5:
-                    self.logger.print_message("WARNING", f"Subframe minima outside range {subframe_minima}")
-
-                #self.phases.append(((frame_minima - 2 + subframe_minima) / self.reference_period) * (2 * np.pi))
-                self.phases.append(frame_minima - 2 + subframe_minima)
-
-            self.phases = np.array(self.phases)
-            self.frame_minimas = np.array(self.frame_minimas)
-            self.drifts = np.array(self.drifts)
-
-            self.has_run["get_phases"] = True
-            self.logger.print_message("SUCCESS", "Phases calculated")
-
-    def run(self, clear_memory = False):
-        """ Run the full optical gating on our sequence.
-            Outputs the phases, delta phases and unwrapped phases.
-            Optionally run bias correct and clear memory after completion
-
-            Args:
-                bias_correct (bool, optional): Run with bias correction. Defaults to False.
-                clear_memory (bool, optional): Delete our sequence from memory. Defaults to False.
-        """
-        self.get_reference_sequence_lf()
-        self.get_sads_lf()
-        self.get_sads()
-        self.get_phases()
-        self.get_delta_phases()
-        self.get_unwrapped_phases()
-
-        if self.settings["clear_memory"]:
-            if self.clear_memory():
-                self.logger.print_message("WARNING", "Cleared memory, rerun set_sequence if SADs need to be regenerated.")
-
-
-        self.logger.print_message("SUCCESS", "Finished processing sequence.")
-
-class SignalConvolution(BasicOpticalGating):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def get_reference_sads(self):
-        sad = []
-        for j in range(self.sequence.shape[0]):
-            sad.append(np.sum(np.abs(self.sequence[j] - self.reference_sequence[0])))
-        reference_min = np.argmin(sad)
-        reference_max = reference_min + self.reference_sequence.shape[0]
-        reference_frame_hf_indices = np.arange(reference_min, reference_max)
-
-        reference_sequence = self.reference_sequence[reference_frame_hf_indices]
-
-        sads = []
-        for i in range(reference_sequence.shape[0]):
-            sad = []
-            for j in range(reference_sequence.shape[0]):
-                sad.append(reference_sequence[i].astype(np.int32) - reference_sequence[j].astype(np.int32))
-            sads.append(sad)
-
-        plt.plot(sads[0])
-
-class LinearExpansion(BasicOpticalGating):
-    def __init__(self) -> None:
-        super().__init__()
-
-        self.settings["matching_method"] = "SSD"
-        
-        self.I_0p_I_0p = []
-        self.I_0p_I_1 = []
-        self.I_0p_I_1 = []
-        self.I_1_I_1 = []
-        self.I_1_I_1p = []
-        self.I_1p_I_1p = []
-
-    def get_bias_correction(self):
-        reference_sequence = self._preprocess_reference_sequence_bias_correction()
-
-        for i in range(1, reference_sequence.shape[0] - 1):
-            y_1 = reference_sequence[i - 1]
-            y_2 = reference_sequence[i]
-            y_3 = reference_sequence[i + 1]
-
-            y_mean = (y_1 + y_2 + y_3) / 3
-            m = (y_1 - y_mean) + (y_3 - y_mean)
-            print(m)
-
-class QuadraticModel(BasicOpticalGating):
-    def __init__(self) -> None:
-        super().__init__()
-        self.settings["matching_method"] == "SSD"
-
-        self.bc_I_1_squared = []
-        self.bc_I_2_squared = []
-        self.bc_I_1_times_I_2 = []
-
-    def get_bias_correction(self):
-    # Get our ssd bias correction
-        reference_sequence = self._preprocess_reference_sequence_bias_correction()
-
-        for i in range(1, reference_sequence.shape[0] - 1):
-            y_1 = reference_sequence[i - 1]
-            y_2 = reference_sequence[i]
-            y_3 = reference_sequence[i + 1]
-
-            I_0 = y_2
-            I_2 = (y_1 + y_3 - 2 * y_2) / 2
-            I_1 = y_3 - I_2 - I_0
-
-            I_1_squared = np.sum(I_1**2)
-            I_2_squared = np.sum(I_2**2)
-            I_1_times_I_2 = np.sum(I_1 * I_2)
-
-            self.bc_I_1_squared.append(I_1_squared)
-            self.bc_I_2_squared.append(I_2_squared)
-            self.bc_I_1_times_I_2.append(I_1_times_I_2)
-
-    def get_phases(self):
-        if self._check_if_run("get_sads") == True:
-            from scipy.optimize import curve_fit
-
-            self.logger.print_message("INFO", "Calculating phases...")
-            self.phases = []
-            self.frame_minimas = []
-
-            for i, sad in enumerate(self.sads):
-                frame_minima = np.argmin(sad[2:-2]) + 2
-
-                def fitting_function(t, t_n, c, smush):
-                    I_1_squared = self.bc_I_1_squared[frame_minima - 1]
-                    I_2_squared = self.bc_I_2_squared[frame_minima - 1]
-                    I_1_times_I_2 = self.bc_I_1_times_I_2[frame_minima - 1]
-
-                    return smush * (I_1_squared * (t - t_n)**2 + I_2_squared * (t**2 - t_n**2)**2 + 2 * I_1_times_I_2 * (t - t_n) * (t**2 - t_n**2) + c)
-
-                # Get the frame estimate
-                y_1 = sad[frame_minima - 1]
-                y_2 = sad[frame_minima]
-                y_3 = sad[frame_minima + 1]
-
-                xs = np.linspace(-1, 1, 3)
-                popt, popc = curve_fit(fitting_function, xs, sad[frame_minima - 1:frame_minima + 2], maxfev = 8000)
-                self.phases.append(frame_minima - 2 + popt[0])
-
-            self.phases = np.array(self.phases)
-
-            self.has_run["get_phases"] = True
-
-
-    def run(self):
-        self.get_bias_correction()
-        super().run()
-
-class AdaptedV(BasicOpticalGating):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def _preprocess_reference_sequence_bias_correction(self, frame_number = None):
-        # Pre-process the reference sequence for bias correction
-        # NOTE: This is a separate function so that it can be overriden by subclasses
-        if self.roi is not None:
-            x, y, width, height = self.roi
-            return self.reference_sequence[:, y:y+height, x:x+width].astype(np.int64)
-        else:
-            return self.reference_sequence.astype(np.int64)
-
-    def get_bias_correction(self):
-        """ Get the bias correction. Attempts to reduce biasing caused by varying rate of change in
-            the sum of absolute differences between neighbouring frames which causes V-fitting to be biased.
-            Currently in testing but shown to be effective in reducing bias in synthetic data.
-        """       
-        if self._check_if_run("set_reference_sequence") == True:   
-            self.logger.print_message("INFO", "Calculating bias correction...")
-            # Pre-process the reference sequence - used for subclassing
-            reference_sequence = self._preprocess_reference_sequence_bias_correction()
-
-            # Get the difference between neighbouring reference frames
-            diffs = [0]
-            for i in range(1, reference_sequence.shape[0]):
-                diff = reference_sequence[i] - reference_sequence[i - 1]
-                #diff = diff[diff < 0]
-                diffs.append(np.sum(np.abs(diff)))
-            diffs = np.array(diffs)
-
-            if np.any(diffs < 0):
-                self.logger.print_message("WARNING", "Negative diffs found")
-
-            # Get running sum of differences
-            diffs = np.cumsum(diffs)
-
-            # Normalise - not strictly neccessary but makes it easier to compare plots
-            diffs = diffs / diffs[-1]
-            diffs *= (diffs.shape[0] - 1)
-
-            # Create a cubic spline to interpolate the differences
-            xs = np.arange(len(diffs))
-                                
-            self.cs = CubicSpline(xs, diffs)
-
-            self.has_run["get_bias_correction"] = True
-            self.logger.print_message("SUCCESS", "Bias correction complete")
-
-    
-    def get_phases(self):
-        """ Get the phase estimates for our sequence"""        
-        if self._check_if_run("get_sads") == True:
-            self.logger.print_message("INFO", "Calculating phases...")
-            self.phases = []
-            self.frame_minimas = []
-
-            # Track frames outside the reference period
-            outside_errors = []
-            
-            # Get the frame estimates
-            for i, sad in enumerate(self.sads):           
-                # Get the frame estimate
-                frame_minima = np.argmin(sad[2:-2]) + 2
-                y_1 = sad[frame_minima - 1]
-                y_2 = sad[frame_minima]
-                y_3 = sad[frame_minima + 1]
-                x_1 = frame_minima - 1
-                x_2 = frame_minima
-                x_3 = frame_minima + 1
-
-                if y_1 > y_2 and y_3 > y_2:
-                    # Do v-fitting and bias correction
-                    # NOTE: This is an incredibly inneficient way of doing this - if implementing in production code we'll find an analytic 
-                    # expression for the bias correction
-
-                    # Get the v-fitting parameters
-                    m_1_l, m_3_l, c_1_l, c_3_l, m_3_r, m_1_r, c_1_r, c_3_r = v_fitting(y_1, y_2, y_3, x_1, x_2, x_3)
-
-                    # Generate a sequence used for finding the minima
-                    cdiff_l = self.cs(x_2) - self.cs(x_1)
-                    cs_normalised_l = lambda x: (self.cs(x) - self.cs(x_2)) / cdiff_l
-                    cs_normalised_r = lambda x: (self.cs(x) - self.cs(x_3)) / cdiff_l
-                    xs = np.linspace(x_1, x_3, 10000)
-
-                    # Do fitting using corrected V
-                    v_l_c_l = m_1_l * (x_2 + cs_normalised_l(xs)) + c_1_l
-                    v_r_c_l = m_3_l * (x_3 + cs_normalised_r(xs)) + c_3_l
-                    # Get minima location
-                    x_min_l = (xs)[np.argmin(abs(v_l_c_l - v_r_c_l))]
-                    y_min_l = m_3_l * (x_3 + cs_normalised_r(x_min_l)) + c_3_l
-
-                    # Do fitting using corrected V
-                    cdiff_r = self.cs(x_3) - self.cs(x_2)
-                    cs_normalised_l = lambda x: (self.cs(x) - self.cs(x_1)) / cdiff_r
-                    cs_normalised_r = lambda x: (self.cs(x) - self.cs(x_2)) / cdiff_r
-                    
-                    v_l_c_r = m_1_r * (x_1 + cs_normalised_l(xs)) + c_1_r
-                    v_r_c_r = m_3_r * (x_2 + cs_normalised_r(xs)) + c_3_r
-                    # Get minima location
-                    x_min_r = (xs)[np.argmin(abs(v_l_c_r - v_r_c_r))]
-                    y_min_r = m_3_r * (x_2 + cs_normalised_r(x_min_r)) + c_3_r
-
-                    if y_min_l < y_min_r:
-                        #self.phases.append(x_min_l - 2)
-                        self.phases.append(((x_min_l - 2) / self.reference_period) * (2 * np.pi))
-                    else:
-                        #self.phases.append(x_min_r - 2)
-                        self.phases.append(((x_min_r - 2) / self.reference_period) * (2 * np.pi))
-
-                    self.frame_minimas.append(frame_minima - 2)
-                else:
-                    outside_errors.append(i)
-                    self.phases.append(frame_minima - 2)
-                    self.frame_minimas.append(frame_minima - 2)
-
-            if len(outside_errors) > 0:
-                self.logger.print_message("WARNING", f"Minima for frame(s) {outside_errors} outside of the valid range.")
-
-
-            self.phases = np.array(self.phases)
-            self.frame_minimas = np.array(self.frame_minimas)
-            self.drifts = np.array(self.drifts)
-
-            self.has_run["get_phases"] = True
-            self.logger.print_message("SUCCESS", "Phases calculated")
-
-    def run(self):
-        self.get_bias_correction()
-        super().run()
-
 # !SECTION
 
 # SECTION: Drift correction
@@ -1046,88 +751,7 @@ def get_drift_estimate(frame, refs, matching_frame=None, dxRange=range(-30,31,3)
 #           Use these references for our low framerate generation
 
 logger = Logger("DRS")
-numExtraRefFrames = 2
-
-def establish(sequence, period_history, ref_settings, require_stable_history=True):
-    """ Attempt to establish a reference period from a sequence of recently-received frames.
-        Parameters:
-            sequence        list of PixelArray objects  Sequence of recently-received frame pixel arrays (in chronological order)
-            period_history  list of float               Values of period calculated for previous frames (which we will append to)
-            ref_settings    dict                        Parameters controlling the sync algorithms
-            require_stable_history  bool                Do we require a stable history of similar periods before we consider accepting this one?
-        Returns:
-            List of frame pixel arrays that form the reference sequence (or None).
-            Exact (noninteger) period for the reference sequence
-    """
-    start, stop, periodToUse = establish_indices(sequence, period_history, ref_settings, require_stable_history)
-    if (start is not None) and (stop is not None):
-        referenceFrames = sequence[start:stop]
-    else:
-        referenceFrames = None
-
-    return referenceFrames, periodToUse
-
-def establish_indices(sequence, period_history, ref_settings, require_stable_history=True):
-    """ Establish the list indices representing a reference period, from a given input sequence.
-        Parameters: see header comment for establish(), above
-        Returns:
-            List of indices that form the reference sequence (or None).
-    """
-    logger.print_message("INFO", "Attempting to determine reference period.")
-    if len(sequence) > 1:
-        frame = sequence[-1]
-        pastFrames = sequence[:-1]
-
-        # Calculate Diffs between this frame and previous frames in the sequence
-        diffs = jps.sad_with_references(frame, pastFrames)
-        logger.print_message("DEBUG", "SADs: {0}", diffs)
-
-        # Calculate Period based on these Diffs
-        period = calculate_period_length(diffs, ref_settings["minPeriod"], ref_settings["lowerThresholdFactor"], ref_settings["upperThresholdFactor"])
-        if period != -1:
-            period_history.append(period)
-
-        # If we have a valid period, extract the frame indices associated with this period, and return them
-        # The conditions here are empirical ones to protect against glitches where the heuristic
-        # period-determination algorithm finds an anomalously short period.
-        # JT TODO: The three conditions on the period history seem to be pretty similar/redundant. I wrote these many years ago,
-        #  and have just left them as they "ain't broke". They should really be tidied up though.
-        #  One thing I can say is that the reason for the *two* tests for >6 have to do with the fact that
-        #  we are establishing the period based on looking back from the *most recent* frame, but then actually
-        #  and up taking a period from a few frames earlier, since we also need to incorporate some extra padding frames.
-        #  That logic could definitely be improved and tidied up - we should probably just
-        #  look for a period starting numExtraRefFrames from the end of the sequence...
-        # TODO: JT writes: logically these tests should probably be in calculate_period_length, rather than here
-        history_stable = (len(period_history) >= (5 + (2 * numExtraRefFrames))
-                            and (len(period_history) - 1 - numExtraRefFrames) > 0
-                            and (period_history[-1 - numExtraRefFrames]) > 6)
-        if (
-            period != -1
-            and period > 6
-            and ((require_stable_history == False) or (history_stable))
-        ):
-            # We pick out a recent period from period_history.
-            # Note that we don't use the very most recent value, because when we pick our reference frames
-            # we will pad them with numExtraRefFrames at either end. We pick the period value that
-            # pertains to the range of frames that we will actually use
-            # for the central "unpadded" range of our reference frames.
-            periodToUse = period_history[-1 - numExtraRefFrames]
-            logger.print_message("SUCCESS", "Found a period I'm happy with: {0}".format(periodToUse))
-
-            # DevNote: int(x+1) is the same as np.ceil(x).astype(np.int)
-            numRefs = int(periodToUse + 1) + (2 * numExtraRefFrames)
-
-            # return start, stop, period
-            logger.print_message("INFO",
-                "Start index: {0}; Stop index: {1}; Period {2}",
-                len(pastFrames) - numRefs,
-                len(pastFrames),
-                periodToUse
-            )
-            return len(pastFrames) - numRefs, len(pastFrames), periodToUse
-
-    logger.print_message("WARNING", "I didn't find a period I'm happy with!")
-    return None, None, None
+logger.set_normal()
 
 def calculate_period_length(diffs, minPeriod=5, lowerThresholdFactor=0.5, upperThresholdFactor=0.75):
     """ Attempt to determine the period of one heartbeat, from the diffs array provided. The period will be measured backwards from the most recent frame in the array
@@ -1143,7 +767,7 @@ def calculate_period_length(diffs, minPeriod=5, lowerThresholdFactor=0.5, upperT
     # Unlike JTs codes, the following currently only supports determining the period for a *one* beat sequence.
     # It therefore also only supports determining a period which ends with the final frame in the diffs sequence.
     if diffs.size < 2:
-        logger.print_message("WARNING", "Not enough diffs, returning -1")
+        logger.print_message("DEBUG", "Not enough diffs, returning -1")
         return -1
 
     # initialise search parameters for last diff
@@ -1196,17 +820,12 @@ def calculate_period_length(diffs, minPeriod=5, lowerThresholdFactor=0.5, upperT
         bestMatchPeriod = deltaForMinSinceMax
 
     if bestMatchPeriod is None:
-        logger.print_message("WARNING","I didn't find a whole period, returning -1")
+        logger.print_message("DEBUG","I didn't find a whole period, returning -1")
         return -1
 
     bestMatchEntry = diffs.size - bestMatchPeriod
 
-    interpolatedMatchEntry = (
-        bestMatchEntry
-        + v_fitting(
-            diffs[bestMatchEntry - 1], diffs[bestMatchEntry], diffs[bestMatchEntry + 1]
-        )[0]
-    )
+    interpolatedMatchEntry = (bestMatchEntry + v_fitting_standard(diffs[bestMatchEntry - 1], diffs[bestMatchEntry], diffs[bestMatchEntry + 1])[0])
 
     return diffs.size - interpolatedMatchEntry
 

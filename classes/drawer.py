@@ -1,20 +1,31 @@
 import numpy as np
 import tifffile as tf
-from perlin_numpy import generate_perlin_noise_2d
+#from perlin_numpy import generate_perlin_noise_2d
 import math
 
 from .logger import Logger, Colour
 
 class Drawer():
-    def __init__(self, beats, reference_period, dimensions):
+    def __init__(self, beats = 10, reference_period = 38.156, dimensions =  (256, 256)):
         self.beats = beats
         self.reference_period = reference_period
         self.dimensions = dimensions
 
+        # Settings
+        self.settings = {
+            "dimensions" : dimensions,
+            "beats" : beats,
+            "reference_period" : reference_period,
+            "phase_progression" : "linear", # "acceleration"
+            "phase_progression_noise" : False,
+            "image_noise" : "none", # "none", "Normal"
+            "image_noise_amount" : 5
+        }
+
         # Initialise our arrays
-        self.sequence = np.zeros((int(math.ceil(self.beats * self.reference_period)), *self.dimensions), dtype = np.uint8)
-        self.reference_sequence = np.zeros((int(math.ceil(self.reference_period) + 4), *self.dimensions), dtype = np.uint8)
-        self.canvas = np.zeros(self.dimensions, dtype = np.float32)
+        self.sequence = np.zeros((int(math.ceil(self.settings["beats"] * self.settings["reference_period"])), *self.settings["dimensions"]), dtype = np.uint8)
+        self.reference_sequence = np.zeros((int(math.ceil(self.settings["reference_period"]) + 4), *self.settings["dimensions"]), dtype = np.uint8)
+        self.canvas = np.zeros(self.settings["dimensions"], dtype = np.uint8)
 
         # Set draw mode
         self.draw = np.add
@@ -23,25 +34,22 @@ class Drawer():
         self.logger = Logger("DRW")
 
         # Generate a background
-        self.background = generate_perlin_noise_2d(dimensions, (2,2), (False, False)) * 64
+        #self.background = generate_perlin_noise_2d(dimensions, (2,2), (False, False)) * 64
+
+    def generate_phase_array(self):
+        return 0
  
     def clear_canvas(self):
         self.canvas = np.zeros_like(self.canvas)
-        self.canvas = self.background
-
-    """def add_noise_to_canvas(self):
-        self.canvas = np.random.normal(0, 2, self.canvas.shape)
-        self.canvas[self.canvas > 255] = 255
-        self.canvas[self.canvas < 0] = 0"""
+        #self.canvas = self.background
 
     def get_canvas(self):
         self.canvas[self.canvas < 0] = 0
         self.canvas[self.canvas > 255] = 255
-        #self.canvas += np.random.normal(0, 1, self.canvas.shape)
-        #noise = np.random.poisson(self.canvas / 32)
-        #self.canvas += noise
-        self.canvas[self.canvas < 0] = 0
-        self.canvas[self.canvas > 255] = 255
+        if self.settings["image_noise"] == "normal":
+            self.canvas += np.random.normal(0, self.settings["image_noise_amount"], self.canvas.shape)
+            self.canvas[self.canvas < 0] = 0
+            self.canvas[self.canvas > 255] = 255
         return self.canvas.astype(np.uint8)
     
     def draw_to_canvas(self, new_canvas):
@@ -73,7 +81,7 @@ class Drawer():
             _br (_type_): _description_
         """
         # Draw a 2d gaussian
-        xx, yy = np.meshgrid(range(self.canvas.shape[0]), range(self.canvas.shape[1]))
+        xx, yy = np.indices(self.dimensions)#np.meshgrid(range(self.canvas.shape[0]), range(self.canvas.shape[1]))
         new_canvas = self.circular_gaussian(xx, yy, _mean_x, _mean_y, _sdx, _sdy, _theta, _super)
         new_canvas = _br * new_canvas / np.max(new_canvas)
         self.canvas = self.draw_to_canvas(new_canvas)
@@ -141,6 +149,7 @@ class Drawer():
 class Peristalsis(Drawer):
     """
     Single tube heart simulation
+    # TODO: adjust location of heart wall depending on image scale
 
     Args:
         Drawer (class): Drawer class
@@ -160,10 +169,23 @@ class Peristalsis(Drawer):
     def draw_frame_at_phase(self, phase):
         self.clear_canvas()
         for i in range(self.xs.shape[0]):
-            velocity_scale = 8
-            squish = 0
+            velocity_scale = 6
 
             self.set_drawing_method(np.add)
-            self.draw_circular_gaussian(self.xs[i] + 2 * np.sin(phase), (32 + velocity_scale *  np.sin(phase / 2 + self.xs[i] / 256)**2), 24, 12 + squish * np.sin(phase / 2 + self.xs[i] / 256)**2, 0, 2, 100)
+            _x = self.xs[i] + 2 * np.sin(phase)
+            _y = 8 + velocity_scale *  np.sin(phase / 2 + self.xs[i] / 256)**2
+            _sdx = 6
+            _sdy = 4
+            _theta = 0
+            _super = 2
+            _br = 100
+            self.draw_circular_gaussian(_x, _y, _sdx, _sdy, _theta, _super, _br)
             self.set_drawing_method(np.add)
-            self.draw_circular_gaussian(self.xs[i] + 2 * np.sin(phase), self.dimensions[1] - (32 + velocity_scale *  np.sin(phase / 2 + self.xs[i] / 256)**2), 24, 12 + squish * np.sin(phase / 2 + self.xs[i] / 256)**2, 0, 2, 100)
+            _x = self.xs[i] + 2 * np.sin(phase)
+            _y = self.dimensions[1] - (8 + velocity_scale *  np.sin(phase / 2 + self.xs[i] / 256)**2)
+            _sdx = 6
+            _sdy = 4
+            _theta = 0
+            _super = 2
+            _br = 100
+            self.draw_circular_gaussian(_x, _y, _sdx, _sdy, _theta, _super, _br)
